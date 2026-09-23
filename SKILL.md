@@ -1,9 +1,9 @@
 ---
-name: douyin-transcribe
+name: moonlit-douyin-transcribe
 description: Use when the user provides a Douyin share link or video ID and asks to download a video or extract its speech as text or subtitles. Supports Douyin only; not for Bilibili, YouTube, or Xiaohongshu.
 ---
 
-# Douyin Transcribe Skill
+# 月明·抖音转写
 
 抖音视频抓取 + 转写一体化。**两条核心约束**：
 

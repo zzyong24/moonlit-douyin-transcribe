@@ -1,15 +1,15 @@
 <p align="center">
-  <img src="assets/douyin-transcribe.jpg" width="220" alt="抖音视频转写 Skill 品牌图">
+  <img src="assets/readme/hero.png" width="100%" alt="月明·抖音转写 Skill 品牌图">
 </p>
 
-<h1 align="center">Douyin Transcribe</h1>
+<h1 align="center">月明·抖音转写</h1>
 
 <p align="center">下载抖音视频，并把语音转成文字。</p>
 
 <p align="center">
-  <a href="https://github.com/zzyong24/douyin-transcribe/blob/main/SKILL.md">Skill 使用说明</a> ·
-  <a href="https://github.com/zzyong24/douyin-transcribe/tree/main/scripts">脚本</a> ·
-  <a href="https://github.com/zzyong24/douyin-transcribe/tree/main/evals">评估用例</a>
+  <a href="https://github.com/zzyong24/moonlit-douyin-transcribe/blob/main/SKILL.md">Skill 使用说明</a> ·
+  <a href="https://github.com/zzyong24/moonlit-douyin-transcribe/tree/main/scripts">脚本</a> ·
+  <a href="https://github.com/zzyong24/moonlit-douyin-transcribe/tree/main/evals">评估用例</a>
 </p>
 
 ---
@@ -21,14 +21,13 @@
 将仓库克隆到你的 Agent 支持的 Skill 目录。例如 Codex：
 
 ```bash
-git clone https://github.com/zzyong24/douyin-transcribe.git ~/.codex/skills/douyin-transcribe
+git clone https://github.com/zzyong24/moonlit-douyin-transcribe.git ~/.codex/skills/moonlit-douyin-transcribe
 ```
 
 准备 Python 环境并安装依赖：
 
 ```bash
-cd ~/.codex/skills/douyin-transcribe
-cd ~/.codex/skills/douyin-transcribe
+cd ~/.codex/skills/moonlit-douyin-transcribe
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install faster-whisper opencc-python-reimplemented
