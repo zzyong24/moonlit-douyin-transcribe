@@ -284,18 +284,54 @@ def ffmpeg_stream_to_audio(direct_url: str, mp3_path: str) -> int:
 
 def download_mp4(direct_url: str, mp4_path: str) -> int:
     """urllib 下载 mp4 到本地，返回字节数。"""
-    req = Request(direct_url, headers=DL_HEADERS)
     t0 = time.time()
-    with urlopen(req, timeout=120) as resp, open(mp4_path, "wb") as f:
-        total = int(resp.headers.get("Content-Length") or 0)
-        downloaded = 0
-        chunk = 256 * 1024
-        while True:
-            buf = resp.read(chunk)
-            if not buf:
+    downloaded = 0
+    expected_total = None
+    # Some media endpoints return a bounded HTTP 206 even without a Range header.
+    # Content-Length then describes only that segment, not the complete MP4.
+    for attempt in range(32):
+        headers = dict(DL_HEADERS)
+        if downloaded:
+            headers["Range"] = f"bytes={downloaded}-"
+        req = Request(direct_url, headers=headers)
+        with urlopen(req, timeout=120) as resp:
+            content_range = resp.headers.get("Content-Range")
+            length = resp.headers.get("Content-Length")
+            expected_chunk = int(length) if length else None
+            if content_range:
+                match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range.strip())
+                if not match:
+                    raise RuntimeError("媒体返回无法核验的 Content-Range")
+                start, end, total = map(int, match.groups())
+                if start != downloaded or end < start or end >= total:
+                    raise RuntimeError("媒体分段起止位置不匹配，拒绝拼接")
+                if expected_total is not None and total != expected_total:
+                    raise RuntimeError("媒体总长度变化，拒绝拼接")
+                expected_total = total
+                expected_chunk = end - start + 1
+            elif downloaded or resp.status == 206:
+                raise RuntimeError("媒体续传缺少有效 Content-Range，拒绝拼接")
+            elif expected_chunk is not None:
+                expected_total = expected_chunk
+            received = 0
+            with open(mp4_path, "ab" if downloaded else "wb") as f:
+                while True:
+                    buf = resp.read(256 * 1024)
+                    if not buf:
+                        break
+                    f.write(buf)
+                    received += len(buf)
+            if expected_chunk is not None and received != expected_chunk:
+                raise RuntimeError("媒体响应字节数不足，下载未完成")
+            if not received:
+                raise RuntimeError("媒体响应为空，下载未完成")
+            downloaded += received
+            if expected_total is None or downloaded == expected_total:
                 break
-            f.write(buf)
-            downloaded += len(buf)
+            if downloaded > expected_total:
+                raise RuntimeError("媒体字节数超过预期，拒绝使用")
+    else:
+        raise RuntimeError("媒体分段次数超过限制，下载未完成")
     size = os.path.getsize(mp4_path)
     log("dl", f"下载完成 {size/1024/1024:.2f} MB ({time.time()-t0:.1f}s) -> {mp4_path}")
     return size

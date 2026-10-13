@@ -1,0 +1,5 @@
+interface:
+  display_name: "月明·抖音转写"
+  short_description: "提取抖音视频语音并转成文字"
+  brand_color: "#39EC88"
+  default_prompt: "使用 $moonlit-douyin-transcribe 提取这条抖音视频的语音并转成文字。"
