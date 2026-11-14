@@ -1,25 +1,38 @@
 ---
 name: moonlit-douyin-transcribe
-description: Use when the user provides a Douyin share link or video ID and asks to download a video or extract its speech as text or subtitles. Supports Douyin only; not for Bilibili, YouTube, or Xiaohongshu.
+description: "Use when the user provides a Douyin share link or video ID and asks to download a video or extract its speech as text or subtitles（用户说“把这条抖音转成文字”“提取文案”“扒口播稿”“下载抖音视频”“抓无水印”“出字幕”时使用）。转写只用 API：中文走 Redfox 视频播放链接提取文案（约 0.06 元/条），外语走自带字幕→Groq→Deepgram；下载 Redfox 优先，匿名链路备选，不用 Cookie。Supports Douyin only; not for Bilibili, YouTube, or Xiaohongshu, and not for batch crawling or reposting."
 ---
 
 # 月明·抖音转写
 
-抖音视频抓取 + 转写一体化。**两条核心约束**：
+抖音视频抓取 + 转写一体化。**三条核心约束**：
 
-1. **只做两件事**：抓视频、转文字。其他都不做。
-2. **依次尝试 iesdouyin 页面、匿名移动端 feed、临时无头浏览器 detail**；不依赖 yt-dlp，不读取或保存用户 Cookie。
+1. **只做两件事**：抓视频、转文字（附带 SRT 时间轴）。其他都不做。
+2. **转写只用 API，不装本地模型**（团队口径 2026-10-20）：中文走 Redfox「视频播放链接提取文案」；外语依次用平台自带字幕 → Groq 免费层 → Deepgram 赠送额度。
+3. **下载 Redfox 优先**：Redfox 抖音下载接口拿播放地址；失败时才用匿名备选链路（iesdouyin 页面 → 匿名移动端 feed → 临时无头浏览器 detail）。不读取或保存用户 Cookie，只下单条公开作品，只用于拆解学习。
 
 ## 何时使用本 skill
 
 - 用户粘贴 `https://v.douyin.com/...` 短链或 `https://www.douyin.com/video/{id}` 完整链接
-- 用户口头描述："把这条抖音转写一下"/"提取文字"/"下载视频"/"抓无水印"/"转录"
+- 用户说："把这条抖音转成文字""提取文案""扒一下口播稿""下载这个抖音视频""抓无水印""转录""出字幕"
 - 用户给一个纯数字 video_id
 
 ## 何时**不要**使用本 skill
 
-- 用户想抓 B 站、YouTube、小红书、公众号或 PDF → 使用相应平台工具或 Skill
+- 用户想抓 B 站、YouTube、小红书、公众号或 PDF → 使用相应平台工具（素材工具的 yt-dlp / Redfox 对应平台接口）
 - 用户只想看链接、不需要下载转写 → 不调用本 skill
+- 批量爬主页、搬运或二次发布别人的视频 → 不做
+
+## 费用（调用前先看）
+
+| 步骤 | 后端 | 单价 |
+|---|---|---|
+| 取播放地址 | Redfox `videoDownload/douyin` | 0.06 元/次（折扣价 0.03） |
+| 中文转写 | Redfox `audioTextExtract/submit/videoUrl`，结果查询免费 | 0.06 元/条（折扣价 0.03） |
+| 外语转写 | Groq 免费层 → Deepgram 赠送额度 | 免费额度内 0 |
+| 备选下载 | 匿名链路 | 0 |
+
+一条中文抖音约 0.12 元，属于团队已批准的 Redfox 低价档，不用逐条审批。用 `--quote-only` 先看本条预计费用。调用前查 Redfox 余额（免费接口），剩余 ≤10% 时停用并报充值金额。平台专用的「视频提文案」0.6 元/条不在本脚本里，要用时每条先问月明。
 
 ## 三种模式（用 `--mode` 指定）
 
@@ -29,11 +42,11 @@ description: Use when the user provides a Douyin share link or video ID and asks
 | `audio` | `.txt` + `.mp3` + `metadata.json` | 还要把音频喂给其他工具 |
 | `video` | `.txt` + `.mp3` + `.mp4` + `metadata.json` | 还需要原始画面 |
 
-**默认行为**：mode=text, model-size=small, lang=zh, out-dir=./douyin-output/{YYYY-MM-DD}/{video_id}/
+**默认行为**：mode=text, asr=auto（中文 Redfox）, download-via=redfox, lang=zh, out-dir=./douyin-output/{YYYY-MM-DD}/{video_id}/；产物多一个 `{video_id}.srt`（毫秒时间轴）。
 
 ## 调用方式
 
-调用本 skill 时，使用安装了 `faster-whisper` 与 `opencc` 的 Python 环境。通过仓库根目录运行示例：
+只需 Python 3 标准库和系统 `ffmpeg`；`opencc` 可选（装了才做繁简归一化）。Key 只从环境变量读取：`REDFOX_API_KEY`（中文与下载）、`GROQ_API_KEY`、`DEEPGRAM_API_KEY`（外语），由团队凭据库注入，不写进文件。
 
 ```bash
 python scripts/douyin_transcribe.py \
@@ -42,7 +55,7 @@ python scripts/douyin_transcribe.py \
   --out-dir <输出根目录>
 ```
 
-缺少 Python 依赖时，安装 `faster-whisper`、`opencc-python-reimplemented` 和系统 `ffmpeg`。浏览器兜底需要 PATH 中有 Node.js 22+ 与 Chrome/Chromium；默认自动查找，也可用 `--chrome-path` 指定。移动端 feed 元数据回退不依赖浏览器。
+浏览器兜底需要 PATH 中有 Node.js 22+ 与 Chrome/Chromium；默认自动查找，也可用 `--chrome-path` 指定。移动端 feed 元数据回退不依赖浏览器。
 
 ## 用户交互流程
 
@@ -61,29 +74,26 @@ python scripts/douyin_transcribe.py \
 |---|---|---|
 | `url` (位置参数) | 必填 | 抖音分享链接 / 完整链 / 纯数字 video_id |
 | `--mode` | `text` | `text` / `audio` / `video` |
-| `--model-size` | `small` | `tiny` / `base` / `small` / `medium` / `large-v2` / `large-v3` |
+| `--asr` | `auto` | `auto`（中文 Redfox，外语 Groq→Deepgram）/ `redfox` / `groq` / `deepgram` |
+| `--download-via` | `redfox` | `redfox`（失败自动退匿名链路）/ `anonymous`（只用免费匿名链路） |
+| `--quote-only` | off | 只打印本条预计费用，不联网 |
 | `--out-dir` | `./douyin-output` | 输出根目录；最终路径 = `{out-dir}/{YYYY-MM-DD}/{video_id}/` |
-| `--lang` | `zh` | 转写语言；传空字符串 `""` 让模型自动检测 |
-| `--dry-run` | off | 只解析元数据，不下载不转写（调试用） |
-| `--keep-temp` | off | 保留中间临时文件（一般不需要） |
-| `--browser-fallback` | `auto` | iesdouyin 和匿名移动端 feed 均失败时启用临时浏览器 detail；传 `off` 可禁用 |
+| `--lang` | `zh` | 转写语言；外语填 `en`/`ja` 等；传空字符串 `""` 让后端自动检测 |
+| `--dry-run` | off | 只用匿名链路解析元数据，不下载不转写（免费） |
+| `--keep-temp` | off | 保留中间临时文件 |
+| `--browser-fallback` | `auto` | 匿名链路前两步失败时启用临时浏览器 detail；传 `off` 可禁用 |
 | `--chrome-path` | 自动查找 | Chrome/Chromium 可执行文件路径；也支持环境变量 `CHROME_PATH` |
 
-## 链路细节（实现已封装在脚本里）
+## 链路细节（实现在 scripts/douyin_transcribe.py 与 scripts/asr_backends.py）
 
 ```
-抖音短链
-  └─→ 跟随重定向提取 video_id
-       └─→ iesdouyin 分享页解析 _ROUTER_DATA
-            ├─ 成功 → video.play_addr / download_addr
-            └─ 页面结构失效 → 匿名移动端 feed 主备节点
-                 ├─ api5-normal-c-hl.amemv.com/aweme/v1/feed/
-                 └─ aweme.snssdk.com/aweme/v1/feed/
-                      └─ 精确匹配 aweme_id 后读取 play_addr / download_addr
-                           └─ 两个节点均失败 → 临时无头浏览器 detail 兜底
-                                └─→ 获取播放地址并交给 ffmpeg
-                                     └─→ faster-whisper → opencc t2s
-                                          └─→ 写 .txt + metadata.json
+抖音短链 / 完整链 / video_id
+  └─→ Redfox videoDownload/douyin → videoUrl（0.06 元）
+       └─ 失败 → 匿名备选：iesdouyin _ROUTER_DATA → 匿名移动端 feed → 临时无头浏览器 detail
+            └─→ 中文：Redfox audioTextExtract/submit/videoUrl（直接传播放地址，不在本地抽音）
+                 └─→ 轮询 result（免费）→ text + stampSents（毫秒）
+                 外语：ffmpeg 抽 16k 单声道 mp3 → Groq whisper（≤25MB）→ 失败再 Deepgram（mip_opt_out=true）
+                      └─→ 写 .txt + .srt + metadata.json（不落盘带签名的临时播放地址）
 ```
 
 ## 产物格式
@@ -97,13 +107,11 @@ python scripts/douyin_transcribe.py \
   "duration_sec": 502.3,
   "play_addr_src": "play_addr",
   "fetch_chain": "iesdouyin.com/router-data",
-  "direct_url": "[抓取返回的临时播放地址]",
   "asr": {
-    "model": "small",
+    "backend": "redfox",
     "language": "zh",
-    "language_probability": 1.0,
-    "duration_sec": 502.3,
     "segments": 277,
+    "cost_yuan": 0.06,
     "raw_chars": 2803,
     "normalized_chars": 2803
   },
@@ -121,8 +129,8 @@ python scripts/douyin_transcribe.py \
 - 时长: <秒>s
 - 抓取时间: <ISO8601>
 - 链路: iesdouyin.com / play_addr → play
-- 转写: faster-whisper small (lang=zh, prob=1)
-- 归一化: opencc t2s
+- 转写: redfox API (lang=zh, 277 句)
+- 归一化: opencc t2s（未装 opencc 时写“未做”）
 
 ---
 
@@ -132,8 +140,8 @@ python scripts/douyin_transcribe.py \
 ## 已知限制 & 边界
 
 - **直播、图集、私密视频、已删除视频** → 解析必然失败，报错清晰
-- **超长视频（>1 小时）** → small 模型需要 ~10 分钟；建议先切分或用 `tiny` 跑一遍概览
-- **多说话人 / 嘈杂环境** → small 模型对重叠人声识别率有限；不输出时间戳（如果以后需要，加 `--diarize` 或 `--timestamps`）
+- **超长视频（>1 小时）** → Redfox 处理时间变长，脚本最多等 10 分钟，超时会给出 taskId，可用免费查询接口续查；外语走 Groq 时单文件 ≤25MB，超出先切段
+- **多说话人 / 嘈杂环境** → API 对重叠人声识别率有限；时间戳按后端返回的分句写进 .srt
 - **iesdouyin 页面结构失效** → 先试匿名移动端 feed 主备节点，再用临时浏览器 detail 兜底；该浏览器使用临时目录，退出后删除，不读取用户浏览器资料
 - **没有 Node.js 或 Chrome/Chromium** → 两条匿名元数据链路仍可用；前两条链路均失败时才报告浏览器依赖缺失
 - **私密、已删除或需要登录授权的作品** → 临时匿名浏览器不会借用用户登录态，仍会准确失败
@@ -141,15 +149,15 @@ python scripts/douyin_transcribe.py \
 ## 调试技巧
 
 ```bash
-# 只看元数据，不下载
+# 看本条预计费用（不联网）
+python scripts/douyin_transcribe.py --quote-only "https://v.douyin.com/xxxxx/"
+
+# 只看元数据，不下载（免费匿名链路）
 python scripts/douyin_transcribe.py --dry-run "https://v.douyin.com/xxxxx/"
 
-# 跑小模型快速验证
-python scripts/douyin_transcribe.py --model-size tiny "https://v.douyin.com/xxxxx/"
+# 不花 Redfox 下载费，只用匿名链路取地址
+python scripts/douyin_transcribe.py --download-via anonymous "https://v.douyin.com/xxxxx/"
 
-# 让模型自动检测语言
-python scripts/douyin_transcribe.py --lang "" "https://v.douyin.com/xxxxx/"
-
-# 禁用浏览器兜底，专门诊断 iesdouyin 匿名链
-python scripts/douyin_transcribe.py --browser-fallback off --dry-run "https://v.douyin.com/xxxxx/"
+# 外语视频：Groq → Deepgram
+python scripts/douyin_transcribe.py --lang en "https://v.douyin.com/xxxxx/"
 ```

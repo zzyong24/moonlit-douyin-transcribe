@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 """
-douyin_transcribe.py — 抖音视频抓取 + 转写
+douyin_transcribe.py — 抖音视频抓取 + 转写（只用 API，不装本地模型）
 
-链路（无需用户 Cookie、无需 yt-dlp）：
+链路（无需用户 Cookie）：
   抖音分享链接
-    -> 短链跟随重定向提取 video_id
-    -> iesdouyin.com/share/video/{id} 解析 window._ROUTER_DATA
-    -> 页面结构失效时，依次尝试匿名移动端 feed 与临时无头 Chrome detail
-    -> play_addr.url_list[0] 替换 playwm->play （去水印直链）
-    -> ffmpeg 流式抽音频（text/audio 模式）或 urllib 下载 mp4（video 模式）
-    -> faster-whisper (small 默认) 转写
-    -> opencc t2s 繁简归一化
-    -> 落盘 .txt (+ 可选 .mp3 / .mp4) + metadata.json
+    -> 下载/播放地址：Redfox 抖音下载接口（0.06 元/次，优先）
+       失败时备选匿名链路：iesdouyin 页面 → 匿名移动端 feed → 临时无头 Chrome detail
+    -> 转写（scripts/asr_backends.py）：
+       中文：Redfox「视频播放链接提取文案」（0.06 元/条，带毫秒时间戳）
+       外语：平台自带字幕 → Groq 免费层 whisper → Deepgram 赠送额度
+    -> 落盘 .txt + .srt (+ 可选 .mp3 / .mp4) + metadata.json
 
-基础依赖：faster-whisper, opencc, ffmpeg(系统)
-浏览器兜底依赖：Node.js 22+ 与 Chrome/Chromium（只在前两种匿名元数据链路失效时启动）
-Python 运行环境需安装 faster-whisper 与 opencc；ffmpeg 需在系统 PATH 中可用。
+依赖：Python 3 标准库 + 系统 ffmpeg；opencc 可选（装了才做繁简归一化）。
+Key 只从环境变量读：REDFOX_API_KEY / GROQ_API_KEY / DEEPGRAM_API_KEY。
 """
 import argparse
 import json
@@ -30,6 +27,9 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from urllib.request import Request, urlopen
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import asr_backends as ab  # noqa: E402
 
 # ---------------- 常量 ----------------
 
@@ -49,7 +49,7 @@ DL_HEADERS = {
 }
 
 VALID_MODES = ("text", "audio", "video")
-VALID_MODELS = ("tiny", "base", "small", "medium", "large-v2", "large-v3")
+VALID_ASR = ("auto", "redfox", "groq", "deepgram")
 BROWSER_HELPER = Path(__file__).with_name("douyin_browser_detail.mjs")
 
 
@@ -354,44 +354,40 @@ def extract_mp3_from_mp4(mp4_path: str, mp3_path: str) -> int:
 
 # ---------------- 转写 + 归一化 ----------------
 
-def _load_opencc():
-    """懒加载 opencc。"""
-    from opencc import OpenCC
-    return OpenCC("t2s")
+def _t2s(text: str) -> tuple[str, bool]:
+    """装了 opencc 就做繁简归一化；没装就原样返回（不强制安装）。"""
+    try:
+        from opencc import OpenCC  # 可选依赖
+    except ImportError:
+        return text, False
+    return OpenCC("t2s").convert(text), True
 
 
-def transcribe(mp3_path: str, model_size: str, lang: str | None) -> tuple[str, dict]:
-    """faster-whisper 转写 + opencc 繁简归一化。返回 (text, info_dict)。"""
-    from faster_whisper import WhisperModel
-    log("asr", f"加载 faster-whisper {model_size} (cpu, int8)")
-    t0 = time.time()
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    log("asr", f"模型加载 {time.time()-t0:.1f}s")
-
-    log("asr", f"转写: {mp3_path} (lang={lang or 'auto'})")
-    t0 = time.time()
-    segments, info = model.transcribe(mp3_path, language=lang, vad_filter=True)
-    parts = []
-    for seg in segments:
-        parts.append(seg.text.strip())
-    raw = "\n".join(p for p in parts if p)
-    log("asr", f"转写完成 {time.time()-t0:.1f}s, lang={info.language} prob={info.language_probability:.2f}, "
-            f"{len(parts)} 段, {len(raw)} 字")
-
-    log("asr", "opencc t2s 繁简归一化")
-    cc = _load_opencc()
-    text = cc.convert(raw)
-
-    asr_info = {
-        "model": model_size,
-        "language": info.language,
-        "language_probability": round(info.language_probability, 4),
-        "duration_sec": round(info.duration, 1),
-        "segments": len(parts),
-        "raw_chars": len(raw),
-        "normalized_chars": len(text),
-    }
-    return text, asr_info
+def transcribe_api(asr: str, lang: str | None, play_url: str | None, mp3_path: str | None) -> tuple[str, dict, list]:
+    """按团队口径选 API 后端。返回 (text, asr_info, segments)。"""
+    order = [asr] if asr != "auto" else (["redfox"] if (lang or "zh").startswith("zh") else ["groq", "deepgram"])
+    errors = []
+    for name in order:
+        try:
+            t0 = time.time()
+            if name == "redfox":
+                if not play_url:
+                    raise ab.BackendError("Redfox 提文案需要可直接访问的播放地址")
+                r = ab.redfox_transcribe_url(play_url)
+            elif name == "groq":
+                r = ab.groq_transcribe(mp3_path, lang)
+            else:
+                r = ab.deepgram_transcribe(mp3_path, lang)
+            text, normalized = _t2s(r["text"])
+            log("asr", f"{name} 转写完成 {time.time()-t0:.1f}s, {len(r['segments'])} 句, {len(text)} 字")
+            return text, {"backend": name, "language": lang or r.get("language") or "auto",
+                          "segments": len(r["segments"]), "raw_chars": len(r["text"]),
+                          "normalized_chars": len(text), "opencc_t2s": normalized,
+                          "cost_yuan": ab.PRICES["redfox_transcribe"] if name == "redfox" else 0}, r["segments"]
+        except ab.BackendError as e:
+            errors.append(f"{name}: {e}")
+            log("asr", f"{name} 失败：{e}")
+    raise RuntimeError("所有转写后端都失败：" + "; ".join(errors))
 
 
 # ---------------- 落盘 ----------------
@@ -403,6 +399,7 @@ def save_outputs(
     asr_info: dict,
     mp3_path: str | None,
     mp4_path: str | None,
+    segments: list | None = None,
 ) -> dict:
     """按 mode 决定保留哪些文件，落盘 metadata.json / .txt。返回落盘清单。"""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -418,15 +415,18 @@ def save_outputs(
         f"- 时长: {meta.get('duration_sec')}s\n"
         f"- 抓取时间: {datetime.now().isoformat(timespec='seconds')}\n"
         f"- 链路: {meta.get('fetch_chain', 'iesdouyin.com')} / {meta['play_addr_src']} → play\n"
-        f"- 转写: faster-whisper {asr_info['model']} (lang={asr_info['language']}, "
-        f"prob={asr_info['language_probability']})\n"
-        f"- 归一化: opencc t2s\n"
+        f"- 转写: {asr_info['backend']} API (lang={asr_info['language']}, {asr_info['segments']} 句)\n"
+        f"- 归一化: {'opencc t2s' if asr_info.get('opencc_t2s') else '未做（未装 opencc）'}\n"
         f"\n"
         f"---\n"
         f"\n"
     )
     txt_path.write_text(header + text + "\n", encoding="utf-8")
     saved["txt"] = str(txt_path)
+    if segments:
+        srt_path = out_dir / f"{meta['video_id']}.srt"
+        srt_path.write_text(ab.to_srt(segments), encoding="utf-8")
+        saved["srt"] = str(srt_path)
 
     # 2) 音频（保留）
     if mp3_path and os.path.exists(mp3_path):
@@ -442,7 +442,7 @@ def save_outputs(
 
     # 4) metadata.json
     meta_full = {
-        **meta,
+        **{k: v for k, v in meta.items() if k != "direct_url"},  # 不落盘带签名的临时播放地址
         "asr": asr_info,
         "saved_files": {k: v for k, v in saved.items()},
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
@@ -467,7 +467,7 @@ def main():
             "示例:\n"
             '  python douyin_transcribe.py "https://v.douyin.com/xxxxx/"\n'
             '  python douyin_transcribe.py "https://www.douyin.com/video/7647796267023650084" --mode video\n'
-            '  python douyin_transcribe.py 7647796267023650084 --mode audio --model-size medium\n'
+            '  python douyin_transcribe.py 7647796267023650084 --mode audio --download-via anonymous\n'
         ),
     )
     parser.add_argument("url", help="抖音分享链接（短链或完整）或纯数字 video_id")
@@ -476,8 +476,16 @@ def main():
         help="输出模式: text=只文字, audio=文字+mp3, video=文字+mp4+mp3 (默认 text)",
     )
     parser.add_argument(
-        "--model-size", choices=VALID_MODELS, default="small",
-        help="faster-whisper 模型 (默认 small)",
+        "--asr", choices=VALID_ASR, default="auto",
+        help="转写后端：auto=中文走 Redfox，外语走 Groq→Deepgram（默认 auto）",
+    )
+    parser.add_argument(
+        "--download-via", choices=("redfox", "anonymous"), default="redfox",
+        help="取播放地址：redfox=Redfox 下载接口优先（0.06 元，失败自动退到匿名链路）；anonymous=只用匿名链路（免费）",
+    )
+    parser.add_argument(
+        "--quote-only", action="store_true",
+        help="只打印本条预计费用，不联网",
     )
     parser.add_argument(
         "--out-dir", default="./douyin-output",
@@ -485,7 +493,7 @@ def main():
     )
     parser.add_argument(
         "--lang", default="zh",
-        help="转写语言代码，默认 zh；传空字符串让模型自动检测",
+        help="转写语言代码，默认 zh；外语填 en/ja 等，传空字符串让后端自动检测",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -509,14 +517,32 @@ def main():
         args.lang = None
 
     t_total = time.time()
+    zh = (args.lang or "zh").startswith("zh")
+    use_redfox_asr = args.asr == "redfox" or (args.asr == "auto" and zh)
+    cost = (ab.PRICES["redfox_download"] if args.download_via == "redfox" else 0) + \
+           (ab.PRICES["redfox_transcribe"] if use_redfox_asr else 0)
+    log("cost", f"本条预计 Redfox 费用 {cost:.2f} 元（下载 {args.download_via}，转写 {'redfox' if use_redfox_asr else 'groq/deepgram 免费额度'}）")
+    if args.quote_only:
+        print(json.dumps({"quote_yuan": cost}, ensure_ascii=False))
+        return
 
     # 1) 解析 video_id + 元数据
     video_id = resolve_douyin_id(args.url)
-    meta = fetch_metadata(
-        video_id,
-        browser_fallback=args.browser_fallback == "auto",
-        chrome_path=args.chrome_path,
-    )
+    meta = None
+    if args.download_via == "redfox" and not args.dry_run:
+        try:
+            share = args.url if args.url.startswith("http") else f"https://www.douyin.com/video/{video_id}"
+            rf = ab.redfox_download_douyin(share)
+            meta = {"video_id": video_id, "title": rf["title"], "author": None, "duration_sec": rf["duration_sec"],
+                    "play_addr_src": "redfox", "fetch_chain": "redfox videoDownload/douyin", "direct_url": rf["video_url"]}
+        except ab.BackendError as e:
+            log("fallback", f"Redfox 下载失败（{e}），改用匿名链路")
+    if meta is None:
+        meta = fetch_metadata(
+            video_id,
+            browser_fallback=args.browser_fallback == "auto",
+            chrome_path=args.chrome_path,
+        )
     log("meta", f"title   = {meta['title'][:60]}")
     log("meta", f"author  = {meta['author'] or '(未知)'}")
     log("meta", f"duration= {meta.get('duration_sec')}s")
@@ -540,9 +566,10 @@ def main():
     keep_mp4 = args.mode == "video"
 
     if args.mode == "text":
-        # 流式抽音 → 临时文件 → 转写后删除（除非 --keep-temp）
-        mp3_path = os.path.join(tmpdir, f"{video_id}.mp3")
-        ffmpeg_stream_to_audio(meta["direct_url"], mp3_path)
+        # Redfox 直接吃播放地址，不用本地抽音；外语后端才需要临时 mp3
+        if not use_redfox_asr:
+            mp3_path = os.path.join(tmpdir, f"{video_id}.mp3")
+            ffmpeg_stream_to_audio(meta["direct_url"], mp3_path)
     else:
         if args.mode == "video":
             mp4_path = os.path.join(tmpdir, f"{video_id}.mp4")
@@ -554,13 +581,14 @@ def main():
             ffmpeg_stream_to_audio(meta["direct_url"], mp3_path)
 
     # 4) 转写
-    text, asr_info = transcribe(mp3_path, args.model_size, args.lang)
+    text, asr_info, segments = transcribe_api(args.asr, args.lang, meta.get("direct_url"), mp3_path)
 
     # 5) 落盘
     if not keep_mp3:
         # 临时文件用完就清掉（text 模式）
         try:
-            os.remove(mp3_path)
+            if mp3_path:
+                os.remove(mp3_path)
         except OSError:
             pass
         mp3_path_for_save = None
@@ -568,7 +596,7 @@ def main():
         mp3_path_for_save = mp3_path
     mp4_path_for_save = mp4_path if keep_mp4 else None
 
-    saved = save_outputs(out_dir, meta, text, asr_info, mp3_path_for_save, mp4_path_for_save)
+    saved = save_outputs(out_dir, meta, text, asr_info, mp3_path_for_save, mp4_path_for_save, segments)
 
     # 6) 打印全文
     print("\n" + "=" * 60)

@@ -1,0 +1,20 @@
+[
+ {
+  "skill": "moonlit-douyin-transcribe",
+  "query": "把这条抖音 https://v.douyin.com/xyz 提取文案",
+  "should_trigger": true,
+  "expected": "Redfox 下载+提文案，约 0.12 元，产出 txt+srt"
+ },
+ {
+  "skill": "moonlit-douyin-transcribe",
+  "query": "扒一下这个抖音视频的口播稿出字幕",
+  "should_trigger": true,
+  "expected": "API 转写，生成 .srt"
+ },
+ {
+  "skill": "moonlit-douyin-transcribe",
+  "query": "下载这个 B 站视频",
+  "should_trigger": false,
+  "expected": "不触发；不支持 B 站"
+ }
+]

@@ -5,7 +5,7 @@
       "id": 1,
       "name": "anonymous-mobile-feed-fallback",
       "prompt": "把这条抖音转成文字：https://v.douyin.com/Bed46kFi73o/",
-      "expected_output": "短链解析为作品 ID 7688329564770110762；iesdouyin 结构解析失败后匿名移动端 feed 成功回退；生成 .txt 与 metadata.json；元信息标题包含「复刻高级视频效果」，时长为 27.5 秒。",
+      "expected_output": "短链解析为作品 ID 7688329564770110762；iesdouyin 结构解析失败后匿名移动端 feed 成功回退；经 Redfox 提文案生成 .txt、.srt 与 metadata.json（不使用本地模型）；元信息标题包含「复刻高级视频效果」，时长为 27.5 秒。",
       "files": []
     }
   ]
