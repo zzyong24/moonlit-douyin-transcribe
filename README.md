@@ -44,7 +44,7 @@ source .venv/bin/activate
 python scripts/douyin_transcribe.py "https://v.douyin.com/xxxxx/"
 ```
 
-默认只保留 `.txt` 和 `metadata.json`。示例：
+默认输出原始逐字稿 `.txt`、毫秒时间轴 `.srt` 和 `metadata.json`（支持直接粘贴整段抖音分享口令；图文作品自动识别并以退出码 `3` 拦截；传入 `--glossary` 时额外生成独立的 `.corrected.md` 术语纠错稿）。示例：
 
 ```bash
 # 只解析元数据，不下载或转写
